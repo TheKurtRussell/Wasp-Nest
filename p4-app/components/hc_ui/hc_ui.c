@@ -13,6 +13,7 @@
  */
 #include "hc_ui.h"
 #include "hc_mode_manager.h"
+#include "hc_wifi_recon.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -75,7 +76,7 @@ static lv_obj_t *s_frames_lbl;
 static uint32_t  s_frame_count;
 
 
-enum { TOOL_BENCH, TOOL_EXPLORER, TOOL_CAPTURE, TOOL_DECODE, TOOL_MESH, TOOL_CONFIG };
+enum { TOOL_BENCH, TOOL_EXPLORER, TOOL_CAPTURE, TOOL_DECODE, TOOL_MESH, TOOL_CONFIG, TOOL_WIFI };
 
 typedef struct {
     int col, row;
@@ -95,6 +96,7 @@ static const hc_tile_t s_tiles[] = {
     {6, 4, LV_SYMBOL_SETTINGS, "config",   HC_HONEY, HC_LHONEY, TOOL_CONFIG},
     {7, 4, LV_SYMBOL_SHUFFLE,  "mesh",     HC_CYAN,  HC_LCYAN,  TOOL_MESH},
     {8, 4, LV_SYMBOL_WIFI,     "explorer", HC_CYAN,  HC_LCYAN,  TOOL_EXPLORER},
+    {9, 3, LV_SYMBOL_WIFI,     "wifi",     HC_CYAN,  HC_LCYAN,  TOOL_WIFI},
 };
 
 static const hc_tile_t *find_tile(int col, int row)
@@ -183,6 +185,7 @@ static lv_timer_t *s_tool_timer;
 static lv_obj_t  *s_dash_psram;
 static lv_obj_t  *s_dash_heap;
 static lv_obj_t  *s_dash_uptime;
+static lv_obj_t  *s_wifi_tbl;
 
 static void close_tool(lv_event_t *e)
 {
@@ -190,6 +193,7 @@ static void close_tool(lv_event_t *e)
     if (s_tool_timer) { lv_timer_delete(s_tool_timer); s_tool_timer = NULL; }
     if (s_overlay)    { lv_obj_delete_async(s_overlay); s_overlay = NULL; }
     s_dash_psram = s_dash_heap = s_dash_uptime = NULL;
+    s_wifi_tbl = NULL;
     s_tool_pending = false;
 }
 
@@ -290,6 +294,65 @@ static void open_config(void)
     s_tool_timer = lv_timer_create(dash_timer_cb, 1000, NULL);
 }
 
+/* ---- wifi recon: live AP table, pulled from hc_wifi_recon once a second ---- */
+static void wifi_refresh_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_wifi_tbl) return;
+    static hc_wifi_ap_t aps[48];
+    size_t n = hc_wifi_recon_snapshot(aps, sizeof(aps) / sizeof(aps[0]));
+    lv_table_set_row_count(s_wifi_tbl, (uint32_t)n + 1);
+    char b[24];
+    for (size_t i = 0; i < n; i++) {
+        uint32_t row = (uint32_t)i + 1;
+        const char *ssid = (aps[i].ssid_len && !(aps[i].flags & HC_WIFI_F_HIDDEN))
+                           ? aps[i].ssid : "<hidden>";
+        lv_table_set_cell_value(s_wifi_tbl, row, 0, ssid);
+        snprintf(b, sizeof(b), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
+                 aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5]);
+        lv_table_set_cell_value(s_wifi_tbl, row, 1, b);
+        snprintf(b, sizeof(b), "%u", aps[i].channel);
+        lv_table_set_cell_value(s_wifi_tbl, row, 2, b);
+        snprintf(b, sizeof(b), "%d", aps[i].rssi);
+        lv_table_set_cell_value(s_wifi_tbl, row, 3, b);
+    }
+}
+
+static void open_wifi(void)
+{
+    lv_obj_t *ov = tool_shell("wifi recon");
+
+    lv_obj_t *hint = lv_label_create(ov);
+    lv_label_set_text(hint, "APs seen (strongest first) \xC2\xB7 updates live");
+    lv_obj_set_style_text_color(hint, lv_color_hex(HC_DIMTXT), 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, 160, 56);
+
+    s_wifi_tbl = lv_table_create(ov);
+    lv_obj_set_size(s_wifi_tbl, LV_PCT(94), LV_PCT(72));
+    lv_obj_align(s_wifi_tbl, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_style_bg_color(s_wifi_tbl, lv_color_hex(HC_BG), 0);
+    lv_obj_set_style_bg_opa(s_wifi_tbl, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_wifi_tbl, 0, 0);
+    lv_obj_set_style_bg_color(s_wifi_tbl, lv_color_hex(HC_PANEL), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(s_wifi_tbl, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(s_wifi_tbl, lv_color_hex(HC_LHONEY), LV_PART_ITEMS);
+    lv_obj_set_style_border_color(s_wifi_tbl, lv_color_hex(0x2A2213), LV_PART_ITEMS);
+
+    lv_table_set_column_count(s_wifi_tbl, 4);
+    lv_table_set_column_width(s_wifi_tbl, 0, 360);
+    lv_table_set_column_width(s_wifi_tbl, 1, 240);
+    lv_table_set_column_width(s_wifi_tbl, 2, 70);
+    lv_table_set_column_width(s_wifi_tbl, 3, 90);
+    lv_table_set_cell_value(s_wifi_tbl, 0, 0, "SSID");
+    lv_table_set_cell_value(s_wifi_tbl, 0, 1, "BSSID");
+    lv_table_set_cell_value(s_wifi_tbl, 0, 2, "CH");
+    lv_table_set_cell_value(s_wifi_tbl, 0, 3, "RSSI");
+
+    wifi_refresh_cb(NULL);
+    s_tool_timer = lv_timer_create(wifi_refresh_cb, 1000, NULL);
+}
+
 static void open_msg(const char *title, const char *msg, uint32_t color)
 {
     lv_obj_t *ov = tool_shell(title);
@@ -307,6 +370,7 @@ static void async_open_tool(void *p)
     int id = (int)(intptr_t)p;
     switch (id) {
         case TOOL_CONFIG: open_config(); break;
+        case TOOL_WIFI:   open_wifi(); break;
         case TOOL_BENCH:  open_msg("usb bench", "coming soon", HC_LHONEY); break;
         default:          open_msg("tool", "waiting on the C6 radio\nflash it via the M5 downloader", HC_DIMTXT); break;
     }
@@ -629,6 +693,7 @@ void hc_ui_set_mode(hc_radio_mode_t mode, bool ok)
 #if HAVE_LVGL
     if (!s_active) return;
     const char *n = mode == HC_MODE_SNIFFER ? "sniffer" :
+                    mode == HC_MODE_WIFI_SNIFFER ? "wifi-recon" :
                     mode == HC_MODE_WIFI ? "wifi" : "idle";
     if (bsp_display_lock(50)) {
         lv_label_set_text(s_mode_lbl, ok ? n : "fail");

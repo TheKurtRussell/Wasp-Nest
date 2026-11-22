@@ -14,6 +14,7 @@
 #include "hc_board.h"
 #include "hc_storage.h"
 #include "hc_explorer.h"
+#include "hc_wifi_recon.h"
 #include "hc_mode_manager.h"
 #include "hc_flasher.h"
 #include "hc_c6updater.h"
@@ -49,6 +50,7 @@ void app_main(void)
     hc_explorer_callbacks_t ecb = { .on_row = on_row, .on_energy = on_energy,
                                     .on_scan = on_scan };
     ESP_ERROR_CHECK(hc_explorer_init(&ecb));
+    ESP_ERROR_CHECK(hc_wifi_recon_init());   /* Wi-Fi AP table; UI reads it live */
 
     hc_flasher_init(on_flash, NULL);
     /* hc_flasher_start() is invoked from the Bench tab when a target is plugged

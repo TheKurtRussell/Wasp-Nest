@@ -4,6 +4,7 @@
 #include "hc_mode_manager.h"
 #include "hc_link_host.h"
 #include "hc_explorer.h"
+#include "hc_wifi_recon.h"
 #include "hc_board.h"
 
 #include <string.h>
@@ -44,23 +45,8 @@ static void on_link_rx(hc_opcode_t op, const uint8_t *p, uint16_t len, void *ctx
         }
         break;
     case HC_EV_WIFI_AP:
-        if (len >= sizeof(hc_wifi_ap_evt_t)) {
-            const hc_wifi_ap_evt_t *ap = (const hc_wifi_ap_evt_t *)p;
-            /* First-slice behaviour: log every sighting so the whole
-             * C6 -> link -> P4 pipeline is observable on the serial console.
-             * TODO: route to hc_wifi_recon (dedupe by BSSID into a live table)
-             * and the Wi-Fi UI tab. */
-            char ssid[33];
-            uint8_t n = ap->ssid_len > 32 ? 32 : ap->ssid_len;
-            memcpy(ssid, ap->ssid, n);
-            ssid[n] = '\0';
-            ESP_LOGI(TAG,
-                     "AP %02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d flags=0x%02x ssid=\"%s\"",
-                     ap->bssid[0], ap->bssid[1], ap->bssid[2],
-                     ap->bssid[3], ap->bssid[4], ap->bssid[5],
-                     ap->channel, ap->rssi, ap->flags,
-                     (ap->flags & HC_WIFI_F_HIDDEN) ? "<hidden>" : ssid);
-        }
+        if (len >= sizeof(hc_wifi_ap_evt_t))
+            hc_wifi_recon_on_ap((const hc_wifi_ap_evt_t *)p);
         break;
     case HC_EV_LOG:
         if (len >= 1) ESP_LOGI("c6", "%s", ((const hc_log_t *)p)->msg);
