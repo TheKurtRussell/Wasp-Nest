@@ -50,6 +50,8 @@ static volatile bool             s_running;
 static hc_wifi_sniffer_callbacks_t s_cb;
 static hc_wscan_cfg_t            s_cfg;
 static volatile bool             s_want_raw;
+static esp_timer_handle_t        s_hop_timer;
+static volatile uint8_t          s_hop_idx;
 
 /* ---- 802.11 management-frame header (little byte fiddling, no full struct) - */
 /* frame control (2) | duration (2) | addr1 (6) | addr2 (6) | addr3 (6) |
@@ -157,6 +159,17 @@ static void promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     xQueueSendFromISR(s_q, &snap, NULL);
 }
 
+/* Periodic channel hop: advance through s_cfg.hop[] one step per tick. Runs on
+ * the esp_timer task (not an ISR), so esp_wifi_set_channel is safe here. The
+ * channel each frame was heard on still comes from rx_ctrl.channel (and the DSSS
+ * tag), so sightings stay correctly stamped as we hop. */
+static void hop_timer_cb(void *arg)
+{
+    if (!s_running || s_cfg.hop_count < 2) return;
+    s_hop_idx = (uint8_t)((s_hop_idx + 1) % s_cfg.hop_count);
+    esp_wifi_set_channel(s_cfg.hop[s_hop_idx], WIFI_SECOND_CHAN_NONE);
+}
+
 esp_err_t hc_wifi_sniffer_init(const hc_wifi_sniffer_callbacks_t *cb)
 {
     if (!cb) return ESP_ERR_INVALID_ARG;
@@ -178,6 +191,7 @@ esp_err_t hc_wifi_sniffer_init(const hc_wifi_sniffer_callbacks_t *cb)
 esp_err_t hc_wifi_sniffer_deinit(void)
 {
     hc_wifi_sniffer_stop();
+    if (s_hop_timer) { esp_timer_delete(s_hop_timer); s_hop_timer = NULL; }
     esp_wifi_stop();
     esp_wifi_deinit();
     if (s_q) { vQueueDelete(s_q); s_q = NULL; }
@@ -193,23 +207,36 @@ esp_err_t hc_wifi_sniffer_start(const hc_wscan_cfg_t *cfg)
     }
     s_cfg      = *cfg;
     s_want_raw = cfg->want_raw;
+    if (s_cfg.hop_count > sizeof(s_cfg.hop)) s_cfg.hop_count = sizeof(s_cfg.hop);
 
     wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(&promisc_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
-    uint8_t ch = cfg->hop_count ? cfg->hop[0] : 1;
+    s_hop_idx  = 0;
+    uint8_t ch = s_cfg.hop_count ? s_cfg.hop[0] : 1;
     esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
 
     s_running = true;
     xTaskCreate(worker_task, "wifi_sniff", 4096, NULL, 5, &s_task);
 
-    /* Channel hopping: a lightweight timer or a tick in the worker can rotate
-     * through cfg.hop[] every cfg.hop_dwell_ms. Kept out of the first slice so
-     * a fixed-channel scan is testable before hop timing is tuned. TODO. */
-    ESP_LOGI(TAG, "recon started: ch=%u hop=%u dwell=%ums raw=%u",
-             ch, cfg->hop_count, cfg->hop_dwell_ms, cfg->want_raw);
+    /* Channel hopping: rotate through hop[] on an esp_timer when more than one
+     * channel is listed; otherwise stay fixed on hop[0]. */
+    if (s_cfg.hop_count >= 2) {
+        uint32_t dwell = s_cfg.hop_dwell_ms ? s_cfg.hop_dwell_ms : 250;
+        if (dwell < 20) dwell = 20;          /* floor: don't thrash the PHY */
+        if (!s_hop_timer) {
+            const esp_timer_create_args_t a = { .callback = hop_timer_cb,
+                                                .name = "wifi_hop" };
+            ESP_ERROR_CHECK(esp_timer_create(&a, &s_hop_timer));
+        }
+        esp_timer_start_periodic(s_hop_timer, (uint64_t)dwell * 1000);
+        ESP_LOGI(TAG, "recon started: hopping %u ch, dwell=%ums raw=%u",
+                 s_cfg.hop_count, dwell, s_cfg.want_raw);
+    } else {
+        ESP_LOGI(TAG, "recon started: fixed ch=%u raw=%u", ch, s_cfg.want_raw);
+    }
     return ESP_OK;
 }
 
@@ -217,6 +244,7 @@ esp_err_t hc_wifi_sniffer_stop(void)
 {
     if (!s_running) return ESP_OK;
     s_running = false;
+    if (s_hop_timer) esp_timer_stop(s_hop_timer);
     esp_wifi_set_promiscuous(false);
     /* worker_task exits on the next queue timeout and self-deletes */
     return ESP_OK;
@@ -225,6 +253,7 @@ esp_err_t hc_wifi_sniffer_stop(void)
 esp_err_t hc_wifi_sniffer_set_channel(uint8_t channel)
 {
     if (channel < 1 || channel > 14) return ESP_ERR_INVALID_ARG;
+    if (s_hop_timer) esp_timer_stop(s_hop_timer);   /* a manual pin ends hopping */
     return esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
 }
 

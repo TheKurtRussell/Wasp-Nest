@@ -53,7 +53,7 @@ Built on Honeycomb's scaffold (clean interfaces, on-hardware bring-up TODOs).
 | C6 Wi-Fi sniffer (`hc_radio_wifi_sniffer`) | **In** — esp_wifi promiscuous, beacon/probe parse |
 | C6 mode agent wiring | **In** — `HC_MODE_WIFI_SNIFFER` + `HC_OP_WSCAN_*` |
 | P4 mode manager wiring | **In** — scan controls + `HC_EV_WIFI_AP` logging |
-| Channel hopping (C6) | **TODO** — one spot in `hc_wifi_sniffer_start` |
+| Channel hopping (C6) | **In** — esp_timer rotates `hop[]` every `hop_dwell_ms` |
 | P4 `hc_wifi_recon` dedupe + Wi-Fi UI tab | **TODO** — AP events currently just logged |
 | BLE recon | **Next** — same shape, swap the C6 radio |
 | C5 foragers (5 GHz over ESP-NOW) | **Next** — reuse these wire structs |
