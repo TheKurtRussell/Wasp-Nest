@@ -8,7 +8,6 @@
 
 #include <string.h>
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -55,8 +54,11 @@ static void on_link_rx(hc_opcode_t op, const uint8_t *p, uint16_t len, void *ctx
             uint8_t n = ap->ssid_len > 32 ? 32 : ap->ssid_len;
             memcpy(ssid, ap->ssid, n);
             ssid[n] = '\0';
-            ESP_LOGI(TAG, "AP " MACSTR " ch=%u rssi=%d flags=0x%02x ssid=\"%s\"",
-                     MAC2STR(ap->bssid), ap->channel, ap->rssi, ap->flags,
+            ESP_LOGI(TAG,
+                     "AP %02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d flags=0x%02x ssid=\"%s\"",
+                     ap->bssid[0], ap->bssid[1], ap->bssid[2],
+                     ap->bssid[3], ap->bssid[4], ap->bssid[5],
+                     ap->channel, ap->rssi, ap->flags,
                      (ap->flags & HC_WIFI_F_HIDDEN) ? "<hidden>" : ssid);
         }
         break;

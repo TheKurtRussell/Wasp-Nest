@@ -4,5 +4,6 @@ idf_component_register(
     REQUIRES esp_wifi esp_timer
     PRIV_REQUIRES freertos
 )
-# The shared wire protocol header (hc_link_protocol.h) comes in via the project's
-# EXTRA_COMPONENT_DIRS / common include path, same as the other hc_* components.
+# Put the shared ../../common headers (hc_link_protocol.h) on the include path,
+# exactly as the other hc_* components do.
+target_include_directories(${COMPONENT_LIB} PUBLIC "${CMAKE_SOURCE_DIR}/../common")

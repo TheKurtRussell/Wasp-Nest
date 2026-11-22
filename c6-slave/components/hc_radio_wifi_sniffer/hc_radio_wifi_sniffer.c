@@ -17,7 +17,6 @@
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 
 static const char *TAG = "hc_wifi_sniff";
 
