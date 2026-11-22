@@ -1,0 +1,21 @@
+# Honeycomb C6 radio service — build defaults
+# Target: esp32c6  (idf.py set-target esp32c6)
+
+# --- IEEE 802.15.4 ---
+CONFIG_IEEE802154_ENABLED=y
+CONFIG_IEEE802154_RX_BUFFER_SIZE=32
+# Promiscuous captures need generous RX buffering; the sniffer copies+releases
+# each frame immediately but headroom avoids drops under bursty traffic.
+
+# --- Console on the C6's own USB-serial-jtag (for standalone debugging) ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# NOTE: the inter-chip link currently uses UART1 (see hc_link_slave.c). When you
+# move the link onto SDIO (phase 2, shared with esp_hosted), add the esp_hosted
+# slave config here and flip HC_LINK_TRANSPORT.

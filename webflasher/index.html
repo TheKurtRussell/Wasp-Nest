@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wasp Nest — Flash your Tab5</title>
+  <!--
+    Web flasher for the Wasp Nest P4 app. Uses the Tasmota/jason2866 fork of
+    ESP Web Tools because it supports the ESP32-P4 and auto-selects the native
+    USB (CDC) interface — the stock esp-web-tools may not know the P4 yet.
+    Flashing works only in Chrome or Edge (Web Serial API).
+  -->
+  <script type="module"
+    src="https://unpkg.com/tasmota-esp-web-tools@12.3.2/dist/web/install-button.js?module"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto;
+           padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+    h1 { font-size: 1.6rem; }
+    .card { border: 1px solid #e2e2e2; border-radius: 10px; padding: 1rem 1.25rem;
+            margin: 1rem 0; }
+    code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 4px; }
+    ol { padding-left: 1.2rem; }
+    .warn { background: #fff7e6; border-color: #ffd591; }
+  </style>
+</head>
+<body>
+  <h1>🐝 Wasp Nest — M5Stack Tab5</h1>
+  <p>A Wi-Fi / BLE / 802.15.4 recon workbench. This page installs the
+     <strong>P4 application</strong> onto your Tab5 over USB-C. Authorized testing
+     only.</p>
+
+  <div class="card">
+    <h2>Step 1 — Flash the P4 app</h2>
+    <ol>
+      <li>Use <strong>Chrome</strong> or <strong>Edge</strong> on a computer.</li>
+      <li>Plug the Tab5 into the computer with a <strong>USB-C</strong> cable.</li>
+      <li>Click Install and pick the Tab5's serial port.</li>
+    </ol>
+    <esp-web-install-button manifest="manifest-p4.json"></esp-web-install-button>
+  </div>
+
+  <div class="card warn">
+    <h2>Step 2 — Give the C6 its firmware (one time)</h2>
+    <p>The radio chip (C6) isn't reachable from the browser — the P4 flashes it
+       for you. Just:</p>
+    <ol>
+      <li>Download <a href="merged-c6.bin" download>merged-c6.bin</a>.</li>
+      <li>Copy it to the Tab5's microSD card as
+          <code>/waspnest/c6_service.bin</code>.</li>
+      <li>Insert the card and boot. On the Status tab, tap <em>Flash C6</em>
+          (or it runs automatically on first boot if the C6 isn't responding).</li>
+    </ol>
+    <p>You only do this once; afterwards you can re-flash just the P4 app from
+       Step 1 whenever you update.</p>
+  </div>
+
+  <p style="color:#777;font-size:0.9rem">Built automatically by GitHub Actions
+     from the Wasp Nest source. Firmware versions shown after connecting.</p>
+</body>
+</html>

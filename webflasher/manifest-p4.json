@@ -1,0 +1,14 @@
+{
+  "name": "Wasp Nest (Tab5 P4 app)",
+  "version": "0.1.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "usbInterface": "CDC",
+      "parts": [
+        { "path": "merged-p4.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

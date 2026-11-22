@@ -1,0 +1,95 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: c6
+            path: c6-slave
+            target: esp32c6
+          - name: p4
+            path: p4-app
+            target: esp32p4
+    steps:
+      - uses: actions/checkout@v4
+
+      # The idf-component-manager bundled in the v5.5 image (2.2.2) aborts
+      # dependency resolution when an optional dependency's `if` clause references
+      # a Kconfig symbol that lives in a not-yet-downloaded component (LVGL's
+      # LV_USE_FREETYPE, pulled via the Tab5 BSP):
+      #   MissingKconfigError: LV_USE_FREETYPE
+      # Manager 3.x fixes this, but IDF 5.5 pins `idf-component-manager~=2.2` in
+      # its own requirements and refuses to run with 3.x. There is no 2.x release
+      # with the fix, so we install 3.x AND relax that one pin so idf.py's startup
+      # dependency check accepts it. (PIP_CONSTRAINT is cleared so IDF's pinned
+      # constraint file doesn't block the upgrade.)
+      - name: Build ${{ matrix.name }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: ${{ matrix.target }}
+          path: ${{ matrix.path }}
+          command: "PIP_CONSTRAINT= pip install -U idf-component-manager && sed -i 's/^idf-component-manager.*/idf-component-manager/' /opt/esp/idf/tools/requirements/requirements.core.txt && idf.py build"
+
+      - name: Merge ${{ matrix.name }} image
+        run: |
+          python -m pip install --quiet esptool
+          cd ${{ matrix.path }}/build
+          esptool.py --chip ${{ matrix.target }} merge_bin \
+            -o ../../merged-${{ matrix.name }}.bin \
+            @flash_args
+          ls -la ../../merged-${{ matrix.name }}.bin
+
+      - name: Upload ${{ matrix.name }} binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: waspnest-${{ matrix.name }}
+          path: merged-${{ matrix.name }}.bin
+
+  pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect binaries into the web flasher
+        uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r webflasher/* _site/
+          cp _artifacts/waspnest-p4/merged-p4.bin _site/merged-p4.bin
+          cp _artifacts/waspnest-c6/merged-c6.bin _site/merged-c6.bin
+          # Cache-bust: the firmware and manifest have fixed names, so browsers
+          # and the Pages CDN happily serve a stale merged-p4.bin after a new
+          # build (you flash, nothing changes, same crash). Stamp the short
+          # commit SHA into the firmware URL and the manifest reference so every
+          # build fetches a unique, uncacheable path. Also surface the SHA as the
+          # manifest version so it shows in the flasher UI.
+          SHA="${GITHUB_SHA::7}"
+          echo "Stamping build $SHA into flasher"
+          sed -i "s|merged-p4.bin|merged-p4.bin?v=$SHA|g" _site/manifest-p4.json
+          sed -i "s|\"version\": \"[^\"]*\"|\"version\": \"$SHA\"|" _site/manifest-p4.json
+          sed -i "s|manifest=\"manifest-p4.json\"|manifest=\"manifest-p4.json?v=$SHA\"|g" _site/index.html
+          echo "--- manifest-p4.json ---"; cat _site/manifest-p4.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

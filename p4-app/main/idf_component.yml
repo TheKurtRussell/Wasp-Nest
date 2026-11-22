@@ -1,0 +1,39 @@
+# Managed component dependencies for the P4 app.
+#
+# Minimal set for a clean first build. The feature libraries below are added
+# back ONE AT A TIME as each subsystem is implemented and tested — they pull in
+# heavy/optional dependencies, and esp_hosted's optional CherryUSB manifest in
+# particular breaks a cold dependency solve in CI
+# (MissingKconfigError: ESP_HOSTED_HOST_USB_CHERRYUSB_MANIFEST).
+#
+# None of these are required to COMPILE today: hc_ui, hc_flasher and
+# hc_c6updater all detect their library with __has_include and fall back to a
+# headless/stub path when it is absent. So the app still builds and runs
+# (link + sniffer control + explorer + pcap); only the display, the USB-host
+# transport, the C6-from-SD updater and Wi-Fi mode wait for their library.
+dependencies:
+  idf: ">=5.5"
+
+  # C6-from-SD updater (Plan A). Enabled for the SDIO-flash bring-up test.
+  espressif/esp-serial-flasher: "^2.1.0"
+
+  # Tab5 display BSP — brings up the MIPI-DSI panel, GT911/ST7123 touch, the
+  # display power rail, and LVGL (via esp_lvgl_port). Gives us bsp_display_start().
+  espressif/m5stack_tab5: "^1.3.0"
+
+  # Pin esp_lvgl_port to 2.8.0. 2.9.0 switched the DPI panel event callback from
+  # on_refresh_done to on_frame_buf_complete, which only exists in esp_lcd newer
+  # than the stable IDF v5.5.0 image (building on release-v5.5 to get it produced
+  # a bootloader that crashes on esp32p4-eco2 silicon). 2.8.0 uses on_refresh_done
+  # (present in v5.5.0) and satisfies the BSP's ^2 range.
+  espressif/esp_lvgl_port: "==2.8.0"
+
+  # Re-add per feature (see docs/roadmap.md), each in its own CI run so a
+  # failure is easy to pin on one library:
+  #   lvgl/lvgl: "^9.2.0"                      # when the display BSP is wired
+  #   espressif/usb_host_vcp: "^1.0.0"        # when the USB-host flasher transport is wired
+  #   espressif/usb_host_cdc_acm: "^2.0.0"
+  #   espressif/usb_host_cp210x_vcp: "^2.0.0"
+  #   espressif/usb_host_ch34x_vcp: "^2.0.0"
+  #   espressif/usb_host_ftdi_vcp: "^1.0.0"
+  #   espressif/esp_hosted: ">=3.0.4"         # WIFI mode; needs explicit config — add last

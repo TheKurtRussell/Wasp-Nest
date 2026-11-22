@@ -1,0 +1,63 @@
+# Honeycomb P4 app — build defaults
+# Target: esp32p4  (idf.py set-target esp32p4)
+
+# --- PSRAM (Tab5 has 32MB Octal PSRAM) ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# --- Flash (16MB) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Console on the P4's own USB-serial-jtag ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+
+# --- Display: MIPI-DSI panel via m5stack_tab5 BSP + esp_lvgl_port ---
+# Some IDF builds gate the P4 MIPI-DSI LCD driver behind experimental features.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+
+# LVGL (v9) is pulled in transitively by the BSP. Its component manifest gates
+# optional image/font dependencies on these Kconfig symbols, which must be
+# defined at dependency-solve time or the solver aborts:
+#   MissingKconfigError: LV_USE_FREETYPE
+# We use only the built-in widgets + fonts, so disable them all.
+CONFIG_LV_USE_FREETYPE=n
+CONFIG_LV_USE_THORVG=n
+CONFIG_LV_USE_LODEPNG=n
+CONFIG_LV_USE_LIBPNG=n
+CONFIG_LV_USE_FFMPEG=n
+CONFIG_LV_USE_RLOTTIE=n
+CONFIG_LV_USE_TINY_TTF=n
+# Panel is RGB565.
+CONFIG_LV_COLOR_DEPTH_16=y
+# LVGL's builtin allocator uses a fixed pool; the default (~48 KB) is too small
+# for a large hex comb (many lv_obj/lv_line) and overflows with a TLSF assert
+# (brief render then reboot loop). Give it generous headroom. A full pool makes
+# lv_*_create() return NULL, which LVGL then writes through (store fault at a
+# tiny address) when a heavy overlay like the game is opened on top of the comb.
+# 320 KB leaves comfortable room for the comb + any overlay; still fits internal
+# RAM with ~340 KB of heap to spare.
+CONFIG_LV_MEM_SIZE_KILOBYTES=320
+
+# --- USB host (flasher) ---
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
+
+# --- FATFS long filenames for capNNN.pcap paths ---
+CONFIG_FATFS_LFN_HEAP=y
+
+# --- esp-serial-flasher: build the SDIO port so esp32_sdio_ops is linked ---
+# The library compiles only the selected interface's port; default is UART.
+# Select SDIO so the C6 flasher (hc_c6updater) links. Both symbol spellings are
+# listed; unknown keys in sdkconfig.defaults are ignored harmlessly.
+CONFIG_SERIAL_FLASHER_INTERFACE_SDIO=y
+CONFIG_SERIAL_FLASHER_PORT_SDIO=y
+
+# NOTE: esp_hosted (WIFI mode) adds its own required options on first
+# `idf.py reconfigure`; choose the C6 slave target under
+# Component config -> Wi-Fi Remote -> choose slave target = ESP32-C6.
