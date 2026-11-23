@@ -1,13 +1,10 @@
 /*
- * Wasp Nest — P4 UI (LVGL) — "cyberpunk waspnest" theme
+ * Wasp Nest — P4 UI (LVGL) — "cyberpunk-kawaii" theme
  *
- * A pannable comb of hexagonal tiles over a warm-charcoal field, with a pinned
- * header (bumblebee mark + status chips). Honey-gold primary, soft cyan accent.
- * Tiles are hexagon OUTLINES drawn with lv_line (stable across LVGL 9.x); the
- * whole comb lives in a scrollable container you can drag in any direction.
- *
- * Orientation: native for now. Landscape rotation lands in a follow-up once the
- * comb is confirmed on-panel (DSI direct-mode rotation is handled separately).
+ * A STATIC splash (no scrolling): a central wasp core with tool nodes wired to
+ * it by neon lines over a deep-indigo field. Pastel-neon palette (magenta / cyan
+ * / mint) — deliberately distinct from Honeycomb's honey comb. Tapping a node
+ * opens a full-screen tool overlay with a back button.
  *
  * Threading: every LVGL touch is wrapped in bsp_display_lock()/unlock().
  */
@@ -18,12 +15,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_app_desc.h"
-#include "esp_random.h"
 
 #if __has_include("bsp/esp-bsp.h")
 #include "lvgl.h"
@@ -35,76 +32,54 @@
 
 #define TAG "hc_ui"
 
-/* ---- waspnest palette ---- */
-#define HC_BG       0x15110A   /* warm charcoal field            */
-#define HC_HDR      0x15110A   /* header strip                   */
-#define HC_PANEL    0x1C160D   /* status chip                    */
-#define HC_HONEY    0xFFC233   /* primary                        */
-#define HC_AMBER    0xF5A623   /* "waiting" amber                */
-#define HC_CYAN     0x38E0E0   /* accent                         */
-#define HC_DIMLINE  0x4A3A16   /* empty comb-cell outline        */
-#define HC_LHONEY   0xE8C98A   /* honey label                    */
-#define HC_LCYAN    0x9EE6E6   /* cyan label                     */
-#define HC_DIMTXT   0x8A7A52   /* muted text                     */
-#define HC_STRIPE   0x1A1206   /* bee stripes                    */
+/* ---- cyberpunk-kawaii palette ---- */
+#define HC_BG       0x0C0A17   /* deep indigo-black field        */
+#define HC_HDR      0x0C0A17   /* header                          */
+#define HC_PANEL    0x1A1333   /* panel / chip violet             */
+#define HC_HONEY    0xFF49D1   /* primary — neon magenta          */
+#define HC_AMBER    0xFFC24F   /* warn / "waiting"                */
+#define HC_CYAN     0x56E0FF   /* accent — neon cyan              */
+#define HC_MINT     0x7CF5C2   /* third accent — kawaii mint      */
+#define HC_DIMLINE  0x3A2E66   /* node connector lines            */
+#define HC_LHONEY   0xFFC7F0   /* light-pink label                */
+#define HC_LCYAN    0xC2F2FF   /* light-cyan label                */
+#define HC_DIMTXT   0x9186C2   /* muted lavender text             */
+#define HC_STRIPE   0x241A46   /* mascot dark stripe              */
+#define HC_NODE     0x160F2E   /* node / core fill                */
 
 static bool s_active;
 
 #if HAVE_LVGL
 
-/* Hexagon dimensions (flat-top) and comb spacing. */
-#define HEX_W   150
-#define HEX_H   130
-#define HEX_AX  112            /* column advance = 0.75 * W       */
-#define HEX_AY  130            /* row advance    = H              */
 #define HDR_H   70
-#define COMB_OX 16
-#define COMB_OY (HDR_H + 12)
-#define COMB_COLS 15
-#define COMB_ROWS 8
-/* Hidden "buzz" game lives behind this unlabeled cell (pan right to find it). */
-#define SECRET_COL 11
-#define SECRET_ROW 2
-
-/* One shared outline shape; every cell reuses it (relative points). */
-static const lv_point_precise_t HEXP[] = {
-    {37, 0}, {113, 0}, {150, 65}, {113, 130}, {37, 130}, {0, 65}, {37, 0}
-};
 
 static lv_obj_t *s_mode_lbl;
 static lv_obj_t *s_frames_lbl;
 static uint32_t  s_frame_count;
 
-
-enum { TOOL_BENCH, TOOL_EXPLORER, TOOL_CAPTURE, TOOL_DECODE, TOOL_MESH, TOOL_CONFIG, TOOL_WIFI };
+enum { TOOL_WIFI, TOOL_BLE, TOOL_EXPLORER, TOOL_CAPTURE, TOOL_BENCH, TOOL_CONFIG };
 
 typedef struct {
-    int col, row;
     const char *icon;
     const char *name;
-    uint32_t line_color;
-    uint32_t text_color;
-    int id;
-} hc_tile_t;
+    uint32_t    color;
+    uint32_t    lcolor;
+    int         id;
+} hc_node_t;
 
-/* The six live tools, clustered near the comb's center so the hive extends in
- * every direction from the start. Every other cell is an empty comb cell. */
-static const hc_tile_t s_tiles[] = {
-    {6, 3, LV_SYMBOL_LIST,     "decode",   HC_HONEY, HC_LHONEY, TOOL_DECODE},
-    {7, 3, LV_SYMBOL_DOWNLOAD, "bench",    HC_HONEY, HC_LHONEY, TOOL_BENCH},
-    {8, 3, LV_SYMBOL_SAVE,     "capture",  HC_HONEY, HC_LHONEY, TOOL_CAPTURE},
-    {6, 4, LV_SYMBOL_SETTINGS, "config",   HC_HONEY, HC_LHONEY, TOOL_CONFIG},
-    {7, 4, LV_SYMBOL_SHUFFLE,  "mesh",     HC_CYAN,  HC_LCYAN,  TOOL_MESH},
-    {8, 4, LV_SYMBOL_WIFI,     "explorer", HC_CYAN,  HC_LCYAN,  TOOL_EXPLORER},
-    {9, 3, LV_SYMBOL_WIFI,     "wifi",     HC_CYAN,  HC_LCYAN,  TOOL_WIFI},
+/* Six nodes orbit the core, colour-cycled magenta / cyan / mint. */
+static const hc_node_t s_nodes[] = {
+    {LV_SYMBOL_WIFI,      "wi-fi",    HC_HONEY, HC_LHONEY, TOOL_WIFI},
+    {LV_SYMBOL_BLUETOOTH, "ble",      HC_CYAN,  HC_LCYAN,  TOOL_BLE},
+    {LV_SYMBOL_SHUFFLE,   "802.15.4", HC_MINT,  HC_LCYAN,  TOOL_EXPLORER},
+    {LV_SYMBOL_SAVE,      "capture",  HC_HONEY, HC_LHONEY, TOOL_CAPTURE},
+    {LV_SYMBOL_DOWNLOAD,  "bench",    HC_CYAN,  HC_LCYAN,  TOOL_BENCH},
+    {LV_SYMBOL_SETTINGS,  "config",   HC_MINT,  HC_LCYAN,  TOOL_CONFIG},
 };
+#define N_NODES (sizeof(s_nodes) / sizeof(s_nodes[0]))
 
-static const hc_tile_t *find_tile(int col, int row)
-{
-    for (size_t i = 0; i < sizeof(s_tiles) / sizeof(s_tiles[0]); i++)
-        if (s_tiles[i].col == col && s_tiles[i].row == row) return &s_tiles[i];
-    return NULL;
-}
+/* Connector-line point storage must persist (LVGL keeps the pointer). */
+static lv_point_precise_t s_npts[N_NODES][2];
 
 static lv_obj_t *bare(lv_obj_t *parent)
 {
@@ -114,55 +89,61 @@ static lv_obj_t *bare(lv_obj_t *parent)
     return o;
 }
 
-/* Little bumblebee, built from a few styled objects. */
-static void build_bee(lv_obj_t *parent)
+static lv_obj_t *dot(lv_obj_t *p, int sz, int x, int y, uint32_t col, lv_opa_t opa)
 {
-    lv_obj_t *bee = bare(parent);
-    lv_obj_set_size(bee, 34, 30);
+    lv_obj_t *o = lv_obj_create(p);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, sz, sz);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(o, lv_color_hex(col), 0);
+    lv_obj_set_style_bg_opa(o, opa, 0);
+    return o;
+}
 
-    lv_obj_t *wl = lv_obj_create(bee);
-    lv_obj_remove_style_all(wl);
-    lv_obj_set_size(wl, 15, 11);
-    lv_obj_set_pos(wl, 1, 0);
-    lv_obj_set_style_radius(wl, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(wl, lv_color_hex(0xCFEFEF), 0);
-    lv_obj_set_style_bg_opa(wl, LV_OPA_60, 0);
+/* A cute wasp, drawn from primitives, centred in a d x d core. */
+static void build_wasp(lv_obj_t *core, int d)
+{
+    int cx = d / 2;
 
-    lv_obj_t *wr = lv_obj_create(bee);
-    lv_obj_remove_style_all(wr);
-    lv_obj_set_size(wr, 15, 11);
-    lv_obj_set_pos(wr, 18, 0);
-    lv_obj_set_style_radius(wr, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(wr, lv_color_hex(0xCFEFEF), 0);
-    lv_obj_set_style_bg_opa(wr, LV_OPA_60, 0);
+    /* wings (translucent cyan) */
+    dot(core, 34, cx - 42, 44, HC_CYAN, LV_OPA_40);
+    dot(core, 34, cx + 8,  44, HC_CYAN, LV_OPA_40);
 
-    lv_obj_t *body = lv_obj_create(bee);
+    /* body */
+    lv_obj_t *body = lv_obj_create(core);
     lv_obj_remove_style_all(body);
-    lv_obj_set_size(body, 22, 24);
-    lv_obj_set_pos(body, 6, 6);
-    lv_obj_set_style_radius(body, 11, 0);
+    lv_obj_set_size(body, 62, 76);
+    lv_obj_set_pos(body, cx - 31, 56);
+    lv_obj_set_style_radius(body, 28, 0);
     lv_obj_set_style_bg_color(body, lv_color_hex(HC_HONEY), 0);
     lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
 
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *s = lv_obj_create(bee);
+    for (int i = 0; i < 2; i++) {       /* stripes */
+        lv_obj_t *s = lv_obj_create(body);
         lv_obj_remove_style_all(s);
-        lv_obj_set_size(s, 22, 3);
-        lv_obj_set_pos(s, 6, 12 + i * 6);
+        lv_obj_set_size(s, 62, 9);
+        lv_obj_set_pos(s, 0, 22 + i * 20);
         lv_obj_set_style_bg_color(s, lv_color_hex(HC_STRIPE), 0);
         lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
     }
+
+    /* kawaii face: eyes + rosy cheeks */
+    dot(core, 10, cx - 16, 78, HC_STRIPE, LV_OPA_COVER);
+    dot(core, 10, cx + 6,  78, HC_STRIPE, LV_OPA_COVER);
+    dot(core, 12, cx - 24, 92, 0xFF8FD8, LV_OPA_50);
+    dot(core, 12, cx + 12, 92, 0xFF8FD8, LV_OPA_50);
 }
 
 static lv_obj_t *status_chip(lv_obj_t *parent, const char *label, const char *val, uint32_t vcol)
 {
     lv_obj_t *chip = lv_obj_create(parent);
     lv_obj_remove_style_all(chip);
-    lv_obj_set_size(chip, 92, 44);
+    lv_obj_set_size(chip, 96, 46);
     lv_obj_set_style_bg_color(chip, lv_color_hex(HC_PANEL), 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(chip, 10, 0);
-    lv_obj_set_style_border_color(chip, lv_color_hex(0x2A2213), 0);
+    lv_obj_set_style_radius(chip, 12, 0);
+    lv_obj_set_style_border_color(chip, lv_color_hex(0x2E2452), 0);
     lv_obj_set_style_border_width(chip, 1, 0);
     lv_obj_set_style_pad_all(chip, 4, 0);
 
@@ -178,7 +159,7 @@ static lv_obj_t *status_chip(lv_obj_t *parent, const char *label, const char *va
     return v;
 }
 
-/* ---- tool views: tap a tile -> full-screen overlay with a back button ---- */
+/* ---- tool views: tap a node -> full-screen overlay with a back button ---- */
 static lv_obj_t  *s_overlay;
 static bool       s_tool_pending;
 static lv_timer_t *s_tool_timer;
@@ -213,7 +194,7 @@ static lv_obj_t *tool_shell(const char *title)
     lv_obj_set_style_bg_color(back, lv_color_hex(HC_PANEL), 0);
     lv_obj_set_style_border_color(back, lv_color_hex(HC_HONEY), 0);
     lv_obj_set_style_border_width(back, 1, 0);
-    lv_obj_set_style_radius(back, 10, 0);
+    lv_obj_set_style_radius(back, 12, 0);
     lv_obj_add_event_cb(back, close_tool, LV_EVENT_CLICKED, NULL);
     lv_obj_t *bl = lv_label_create(back);
     lv_label_set_text(bl, LV_SYMBOL_LEFT "  back");
@@ -321,7 +302,7 @@ static void wifi_refresh_cb(lv_timer_t *t)
 
 static void open_wifi(void)
 {
-    lv_obj_t *ov = tool_shell("wifi recon");
+    lv_obj_t *ov = tool_shell("wi-fi recon");
 
     lv_obj_t *hint = lv_label_create(ov);
     lv_label_set_text(hint, "APs seen (strongest first) \xC2\xB7 updates live");
@@ -337,7 +318,7 @@ static void open_wifi(void)
     lv_obj_set_style_bg_color(s_wifi_tbl, lv_color_hex(HC_PANEL), LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(s_wifi_tbl, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_text_color(s_wifi_tbl, lv_color_hex(HC_LHONEY), LV_PART_ITEMS);
-    lv_obj_set_style_border_color(s_wifi_tbl, lv_color_hex(0x2A2213), LV_PART_ITEMS);
+    lv_obj_set_style_border_color(s_wifi_tbl, lv_color_hex(0x2E2452), LV_PART_ITEMS);
 
     lv_table_set_column_count(s_wifi_tbl, 4);
     lv_table_set_column_width(s_wifi_tbl, 0, 360);
@@ -369,172 +350,47 @@ static void async_open_tool(void *p)
     if (s_overlay) return;
     int id = (int)(intptr_t)p;
     switch (id) {
-        case TOOL_CONFIG: open_config(); break;
-        case TOOL_WIFI:   open_wifi(); break;
-        case TOOL_BENCH:  open_msg("usb bench", "coming soon", HC_LHONEY); break;
-        default:          open_msg("tool", "waiting on the C6 radio\nflash it via the M5 downloader", HC_DIMTXT); break;
+        case TOOL_WIFI:     open_wifi(); break;
+        case TOOL_CONFIG:   open_config(); break;
+        case TOOL_BLE:      open_msg("ble recon", "coming soon", HC_LCYAN); break;
+        case TOOL_CAPTURE:  open_msg("capture", "pcap to SD\ncoming soon", HC_LHONEY); break;
+        case TOOL_BENCH:    open_msg("usb bench", "coming soon", HC_LHONEY); break;
+        default:            open_msg("802.15.4", "waiting on the C6 radio", HC_DIMTXT); break;
     }
 }
 
-static void tile_click_cb(lv_event_t *e)
+static void node_click_cb(lv_event_t *e)
 {
     if (s_overlay || s_tool_pending) return;
     s_tool_pending = true;
     lv_async_call(async_open_tool, lv_event_get_user_data(e));
 }
 
-/* ---- hidden "buzz" mini-game: flap the bee through the comb ---- */
-#define BEE_X   320
-#define BEE_SZ  38
-#define PIPEW   100
-#define GAPH    250
-#define GSPEED  7
-#define GRAV    1
-#define FLAPV   (-15)
-#define NPIPE   3
-#define GAME_W  1280
-#define GAME_H  720
-
-static lv_obj_t *s_bee;
-static lv_obj_t *s_ptop[NPIPE], *s_pbot[NPIPE];
-static int  s_pipex[NPIPE], s_pipegap[NPIPE];
-static bool s_scored[NPIPE];
-static int  s_bee_y, s_bee_vy, s_score;
-static bool s_game_over;
-static lv_obj_t *s_score_lbl, *s_over_lbl;
-
-static void game_place_pipe(int i)
+static void build_node(lv_obj_t *parent, int cx, int cy, const hc_node_t *n)
 {
-    s_pipegap[i] = 150 + (int)(esp_random() % 320);
-    lv_obj_set_pos(s_ptop[i], s_pipex[i], 0);
-    lv_obj_set_size(s_ptop[i], PIPEW, s_pipegap[i] - GAPH / 2);
-    lv_obj_set_pos(s_pbot[i], s_pipex[i], s_pipegap[i] + GAPH / 2);
-    lv_obj_set_size(s_pbot[i], PIPEW, GAME_H - (s_pipegap[i] + GAPH / 2));
-}
+    const int w = 168, h = 96;
+    lv_obj_t *nd = lv_obj_create(parent);
+    lv_obj_remove_style_all(nd);
+    lv_obj_set_size(nd, w, h);
+    lv_obj_set_pos(nd, cx - w / 2, cy - h / 2);
+    lv_obj_set_style_radius(nd, 18, 0);
+    lv_obj_set_style_bg_color(nd, lv_color_hex(HC_NODE), 0);
+    lv_obj_set_style_bg_opa(nd, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(nd, lv_color_hex(n->color), 0);
+    lv_obj_set_style_border_width(nd, 2, 0);
 
-static void game_reset(void)
-{
-    s_bee_y = GAME_H / 2;
-    s_bee_vy = 0;
-    s_score = 0;
-    s_game_over = false;
-    for (int i = 0; i < NPIPE; i++) {
-        s_pipex[i] = GAME_W + 120 + i * 440;
-        s_scored[i] = false;
-        game_place_pipe(i);
-    }
-    lv_obj_set_pos(s_bee, BEE_X, s_bee_y);
-    lv_label_set_text(s_score_lbl, "0");
-    lv_obj_add_flag(s_over_lbl, LV_OBJ_FLAG_HIDDEN);
-}
+    lv_obj_t *ic = lv_label_create(nd);
+    lv_label_set_text(ic, n->icon);
+    lv_obj_set_style_text_color(ic, lv_color_hex(n->color), 0);
+    lv_obj_align(ic, LV_ALIGN_CENTER, 0, -16);
 
-static void game_tick(lv_timer_t *t)
-{
-    (void)t;
-    if (s_game_over) return;
+    lv_obj_t *nm = lv_label_create(nd);
+    lv_label_set_text(nm, n->name);
+    lv_obj_set_style_text_color(nm, lv_color_hex(n->lcolor), 0);
+    lv_obj_align(nm, LV_ALIGN_CENTER, 0, 16);
 
-    s_bee_vy += GRAV;
-    if (s_bee_vy > 22) s_bee_vy = 22;
-    s_bee_y += s_bee_vy;
-    lv_obj_set_y(s_bee, s_bee_y);
-
-    for (int i = 0; i < NPIPE; i++) {
-        s_pipex[i] -= GSPEED;
-        if (s_pipex[i] < -PIPEW) {
-            int maxx = 0;
-            for (int j = 0; j < NPIPE; j++) if (s_pipex[j] > maxx) maxx = s_pipex[j];
-            s_pipex[i] = maxx + 440;
-            s_scored[i] = false;
-            game_place_pipe(i);
-        } else {
-            lv_obj_set_x(s_ptop[i], s_pipex[i]);
-            lv_obj_set_x(s_pbot[i], s_pipex[i]);
-        }
-        if (!s_scored[i] && s_pipex[i] + PIPEW < BEE_X) {
-            s_scored[i] = true;
-            s_score++;
-            char b[8];
-            snprintf(b, sizeof(b), "%d", s_score);
-            lv_label_set_text(s_score_lbl, b);
-        }
-        if (BEE_X + BEE_SZ > s_pipex[i] && BEE_X < s_pipex[i] + PIPEW) {
-            if (s_bee_y < s_pipegap[i] - GAPH / 2 || s_bee_y + BEE_SZ > s_pipegap[i] + GAPH / 2)
-                s_game_over = true;
-        }
-    }
-    if (s_bee_y < 0 || s_bee_y + BEE_SZ > GAME_H) s_game_over = true;
-
-    if (s_game_over) {
-        char b[48];
-        snprintf(b, sizeof(b), "game over\nscore %d\ntap to retry", s_score);
-        lv_label_set_text(s_over_lbl, b);
-        lv_obj_remove_flag(s_over_lbl, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-static void game_flap(lv_event_t *e)
-{
-    (void)e;
-    if (s_game_over) game_reset();
-    else s_bee_vy = FLAPV;
-}
-
-static void open_game(void)
-{
-    lv_obj_t *ov = tool_shell("buzz");
-    lv_obj_add_event_cb(ov, game_flap, LV_EVENT_CLICKED, NULL);
-
-    for (int i = 0; i < NPIPE; i++) {
-        s_ptop[i] = lv_obj_create(ov);
-        lv_obj_remove_style_all(s_ptop[i]);
-        lv_obj_set_style_bg_color(s_ptop[i], lv_color_hex(HC_PANEL), 0);
-        lv_obj_set_style_bg_opa(s_ptop[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(s_ptop[i], lv_color_hex(HC_HONEY), 0);
-        lv_obj_set_style_border_width(s_ptop[i], 2, 0);
-        s_pbot[i] = lv_obj_create(ov);
-        lv_obj_remove_style_all(s_pbot[i]);
-        lv_obj_set_style_bg_color(s_pbot[i], lv_color_hex(HC_PANEL), 0);
-        lv_obj_set_style_bg_opa(s_pbot[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(s_pbot[i], lv_color_hex(HC_HONEY), 0);
-        lv_obj_set_style_border_width(s_pbot[i], 2, 0);
-    }
-
-    s_bee = lv_obj_create(ov);
-    lv_obj_remove_style_all(s_bee);
-    lv_obj_set_size(s_bee, BEE_SZ, BEE_SZ);
-    lv_obj_set_style_radius(s_bee, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_bee, lv_color_hex(HC_HONEY), 0);
-    lv_obj_set_style_bg_opa(s_bee, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(s_bee, lv_color_hex(HC_STRIPE), 0);
-    lv_obj_set_style_border_width(s_bee, 3, 0);
-
-    s_score_lbl = lv_label_create(ov);
-    lv_obj_set_style_text_color(s_score_lbl, lv_color_hex(HC_HONEY), 0);
-    lv_obj_align(s_score_lbl, LV_ALIGN_TOP_MID, 0, 22);
-
-    s_over_lbl = lv_label_create(ov);
-    lv_obj_set_style_text_align(s_over_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(s_over_lbl, lv_color_hex(HC_CYAN), 0);
-    lv_obj_center(s_over_lbl);
-
-    game_reset();
-    s_tool_timer = lv_timer_create(game_tick, 30, NULL);
-}
-
-static void async_open_game(void *p)
-{
-    (void)p;
-    s_tool_pending = false;
-    if (s_overlay) return;
-    open_game();
-}
-
-static void game_click_cb(lv_event_t *e)
-{
-    (void)e;
-    if (s_overlay || s_tool_pending) return;
-    s_tool_pending = true;
-    lv_async_call(async_open_game, NULL);
+    lv_obj_add_flag(nd, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(nd, node_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)n->id);
 }
 
 #endif /* HAVE_LVGL */
@@ -549,122 +405,84 @@ esp_err_t hc_ui_init(void *lv_display)
     lv_obj_set_style_bg_color(scr, lv_color_hex(HC_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_update_layout(scr);
 
-    /* --- pannable comb --- */
-    lv_obj_t *cont = bare(scr);
-    lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(cont, LV_DIR_ALL);
-    lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_NONE);
-    lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
-    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+    int W = lv_obj_get_width(scr);
+    int H = lv_obj_get_height(scr);
+    if (W < 200 || H < 200) { W = 1280; H = 720; }   /* fallback */
 
-    lv_obj_t *field = bare(cont);
-    lv_obj_set_size(field, COMB_OX * 2 + COMB_COLS * HEX_AX + HEX_W / 4,
-                           COMB_OY + COMB_ROWS * HEX_AY + HEX_H);
+    int cx = W / 2;
+    int cy = H / 2 + 30;                              /* leave room for the title */
+    int r  = (H < W ? H : W) * 37 / 100;              /* orbit radius */
 
-    for (int c = 0; c < COMB_COLS; c++) {
-        for (int r = 0; r < COMB_ROWS; r++) {
-            int x = COMB_OX + c * HEX_AX;
-            int y = COMB_OY + r * HEX_AY + ((c & 1) ? HEX_H / 2 : 0);
-            const hc_tile_t *t = find_tile(c, r);
-            bool secret = (c == SECRET_COL && r == SECRET_ROW);
-
-            /* Decorative cells (the vast majority) are just a dim hex outline.
-             * Draw the line straight onto the field with no wrapper object —
-             * that halves the comb's object count and keeps the LVGL pool from
-             * filling up, which otherwise makes a heavy overlay's allocations
-             * fail. Only interactive cells get a wrapper for their click area
-             * and centered labels. */
-            if (!t && !secret) {
-                lv_obj_t *hex = lv_line_create(field);
-                lv_obj_set_pos(hex, x, y);
-                lv_line_set_points(hex, HEXP, 7);
-                lv_obj_set_style_line_color(hex, lv_color_hex(HC_DIMLINE), 0);
-                lv_obj_set_style_line_width(hex, 2, 0);
-                lv_obj_set_style_line_rounded(hex, true, 0);
-                continue;
-            }
-
-            lv_obj_t *cell = bare(field);
-            lv_obj_set_pos(cell, x, y);
-            lv_obj_set_size(cell, HEX_W, HEX_H);
-
-            lv_obj_t *hex = lv_line_create(cell);
-            lv_line_set_points(hex, HEXP, 7);
-            lv_obj_set_style_line_color(hex, lv_color_hex(t ? t->line_color : 0x7A6322), 0);
-            lv_obj_set_style_line_width(hex, t ? 3 : 2, 0);
-            lv_obj_set_style_line_rounded(hex, true, 0);
-
-            if (t) {
-                lv_obj_t *ic = lv_label_create(cell);
-                lv_label_set_text(ic, t->icon);
-                lv_obj_set_style_text_color(ic, lv_color_hex(t->line_color), 0);
-                lv_obj_align(ic, LV_ALIGN_CENTER, 0, -14);
-
-                lv_obj_t *nm = lv_label_create(cell);
-                lv_label_set_text(nm, t->name);
-                lv_obj_set_style_text_color(nm, lv_color_hex(t->text_color), 0);
-                lv_obj_align(nm, LV_ALIGN_CENTER, 0, 14);
-
-                /* tappable: a short tap opens the tool, a drag still pans */
-                lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
-                lv_obj_add_event_cb(cell, tile_click_cb, LV_EVENT_CLICKED,
-                                    (void *)(intptr_t)t->id);
-            } else {
-                /* hidden game cell: a faint honey tint + dot as the only hint */
-                lv_obj_t *dot = lv_label_create(cell);
-                lv_label_set_text(dot, ".");
-                lv_obj_set_style_text_color(dot, lv_color_hex(HC_HONEY), 0);
-                lv_obj_center(dot);
-                lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
-                lv_obj_add_event_cb(cell, game_click_cb, LV_EVENT_CLICKED, NULL);
-            }
-        }
+    /* connector lines first (behind everything) */
+    for (size_t k = 0; k < N_NODES; k++) {
+        double a = (-90.0 + 60.0 * (double)k) * 3.14159265 / 180.0;
+        int nx = cx + (int)(r * cos(a));
+        int ny = cy + (int)(r * sin(a));
+        s_npts[k][0].x = cx; s_npts[k][0].y = cy;
+        s_npts[k][1].x = nx; s_npts[k][1].y = ny;
+        lv_obj_t *ln = lv_line_create(scr);
+        lv_obj_set_pos(ln, 0, 0);
+        lv_line_set_points(ln, s_npts[k], 2);
+        lv_obj_set_style_line_color(ln, lv_color_hex(HC_DIMLINE), 0);
+        lv_obj_set_style_line_width(ln, 2, 0);
+        lv_obj_set_style_line_rounded(ln, true, 0);
     }
 
-    /* --- pinned header (on top of the comb) --- */
-    lv_obj_t *hdr = bare(scr);
-    lv_obj_set_size(hdr, LV_PCT(100), HDR_H);
-    lv_obj_set_style_bg_color(hdr, lv_color_hex(HC_HDR), 0);
-    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(hdr, 14, 0);
-    lv_obj_set_style_pad_right(hdr, 14, 0);
+    /* core: halo + wasp */
+    int d = 172;
+    lv_obj_t *halo = lv_obj_create(scr);
+    lv_obj_remove_style_all(halo);
+    lv_obj_set_size(halo, d + 40, d + 40);
+    lv_obj_set_pos(halo, cx - (d + 40) / 2, cy - (d + 40) / 2);
+    lv_obj_set_style_radius(halo, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(halo, lv_color_hex(HC_HONEY), 0);
+    lv_obj_set_style_bg_opa(halo, LV_OPA_20, 0);
 
-    build_bee(hdr);
-    lv_obj_t *bee_anchor = lv_obj_get_child(hdr, 0);
-    lv_obj_align(bee_anchor, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_t *core = lv_obj_create(scr);
+    lv_obj_remove_style_all(core);
+    lv_obj_set_size(core, d, d);
+    lv_obj_set_pos(core, cx - d / 2, cy - d / 2);
+    lv_obj_set_style_radius(core, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(core, lv_color_hex(HC_NODE), 0);
+    lv_obj_set_style_bg_opa(core, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(core, lv_color_hex(HC_HONEY), 0);
+    lv_obj_set_style_border_width(core, 3, 0);
+    build_wasp(core, d);
 
-    lv_obj_t *title = lv_label_create(hdr);
-    lv_label_set_text(title, "waspnest");
+    /* nodes (on top of the lines) */
+    for (size_t k = 0; k < N_NODES; k++) {
+        double a = (-90.0 + 60.0 * (double)k) * 3.14159265 / 180.0;
+        int nx = cx + (int)(r * cos(a));
+        int ny = cy + (int)(r * sin(a));
+        build_node(scr, nx, ny, &s_nodes[k]);
+    }
+
+    /* title (top-left) */
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "WASP NEST");
     lv_obj_set_style_text_color(title, lv_color_hex(HC_HONEY), 0);
-    lv_obj_align(title, LV_ALIGN_LEFT_MID, 44, -9);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
 
-    lv_obj_t *sub = lv_label_create(hdr);
-    lv_label_set_text(sub, "TAB5 \xC2\xB7 802.15.4 EXPLORER");
+    lv_obj_t *sub = lv_label_create(scr);
+    lv_label_set_text(sub, "recon \xC2\xB7 audit \xC2\xB7 tab5");
     lv_obj_set_style_text_color(sub, lv_color_hex(HC_CYAN), 0);
-    lv_obj_align(sub, LV_ALIGN_LEFT_MID, 44, 11);
+    lv_obj_align(sub, LV_ALIGN_TOP_LEFT, 20, 40);
 
-    lv_obj_t *frames_chip = status_chip(hdr, "FRAMES", "0", HC_CYAN);
-    lv_obj_align(lv_obj_get_parent(frames_chip), LV_ALIGN_RIGHT_MID, 0, 0);
-    s_frames_lbl = frames_chip;
+    /* status chips (top-right) */
+    lv_obj_t *frames_v = status_chip(scr, "SEEN", "0", HC_CYAN);
+    lv_obj_align(lv_obj_get_parent(frames_v), LV_ALIGN_TOP_RIGHT, -14, 12);
+    s_frames_lbl = frames_v;
 
-    lv_obj_t *c6_chip = status_chip(hdr, "C6 RADIO", "waiting", HC_AMBER);
-    lv_obj_align(lv_obj_get_parent(c6_chip), LV_ALIGN_RIGHT_MID, -100, 0);
-    s_mode_lbl = c6_chip;
-
-    /* Start centered so the comb extends in every direction from the first view. */
-    lv_obj_update_layout(scr);
-    int vw = lv_obj_get_width(cont),  vh = lv_obj_get_height(cont);
-    int fw = lv_obj_get_width(field), fh = lv_obj_get_height(field);
-    int sx = (fw - vw) / 2, sy = (fh - vh) / 2;
-    if (sx < 0) sx = 0;
-    if (sy < 0) sy = 0;
-    lv_obj_scroll_to(cont, sx, sy, LV_ANIM_OFF);
+    lv_obj_t *c6_v = status_chip(scr, "C6 RADIO", "waiting", HC_AMBER);
+    lv_obj_align(lv_obj_get_parent(c6_v), LV_ALIGN_TOP_RIGHT, -120, 12);
+    s_mode_lbl = c6_v;
 
     bsp_display_unlock();
     s_active = true;
-    ESP_LOGI(TAG, "waspnest UI up");
+    ESP_LOGI(TAG, "wasp-nest UI up (%dx%d)", W, H);
 #endif
     return ESP_OK;
 }
