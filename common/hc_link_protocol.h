@@ -54,6 +54,10 @@ typedef enum {
     HC_OP_WSCAN_STOP     = 0x31,  /* host->slave: empty */
     HC_OP_WSCAN_SET_CHAN = 0x32,  /* host->slave: hc_set_chan_t (1..14) */
 
+    /* --- ble-scanner (recon) control --- */
+    HC_OP_BLESCAN_START  = 0x40,  /* host->slave: hc_blescan_cfg_t */
+    HC_OP_BLESCAN_STOP   = 0x41,  /* host->slave: empty */
+
     /* --- slave->host events --- */
     HC_EV_HELLO          = 0x80,  /* hc_hello_t (slave's view) */
     HC_EV_PONG           = 0x81,  /* empty */
@@ -68,6 +72,9 @@ typedef enum {
     HC_EV_WIFI_AP        = 0xA0,  /* hc_wifi_ap_evt_t (one AP/probe sighting) */
     HC_EV_WIFI_FRAME     = 0xA1,  /* hc_frame_hdr_t + raw 802.11 (pcap, optional) */
     HC_EV_WSCAN_DONE     = 0xA2,  /* empty (a one-shot scan sweep finished) */
+
+    /* --- ble-scanner events --- */
+    HC_EV_BLE_DEV        = 0xB0,  /* hc_ble_dev_evt_t (one BLE advertiser) */
 } hc_opcode_t;
 
 /* ---- Radio modes --------------------------------------------------------- */
@@ -76,6 +83,7 @@ typedef enum {
     HC_MODE_SNIFFER = 1,   /* esp_ieee802154 promiscuous capture */
     HC_MODE_WIFI    = 2,   /* esp_hosted slave: C6 is a Wi-Fi coprocessor for P4 */
     HC_MODE_WIFI_SNIFFER = 3, /* esp_wifi promiscuous recon (soft switch; NOT esp_hosted) */
+    HC_MODE_BLE_SCANNER  = 4, /* NimBLE observer: BLE advertisement scan */
 } hc_radio_mode_t;
 
 /* ---- Frame header (HC_LINK_MAGIC + this) --------------------------------- */
@@ -207,6 +215,29 @@ typedef struct __attribute__((packed)) {
     uint8_t  ssid_len;       /* 0..32 */
     char     ssid[32];       /* not NUL-terminated; use ssid_len */
 } hc_wifi_ap_evt_t;
+
+/* ---- BLE recon (Wasp Nest) ----------------------------------------------- */
+typedef struct __attribute__((packed)) {
+    uint8_t  active;         /* 1 = active scan (sends scan reqs); 0 = passive */
+    uint16_t itvl;           /* scan interval in 0.625ms units; 0 = driver default */
+    uint16_t window;         /* scan window  in 0.625ms units; 0 = driver default */
+} hc_blescan_cfg_t;
+
+/* BLE device flags */
+#define HC_BLE_F_CONNECTABLE (1u << 0)  /* connectable advertisement */
+#define HC_BLE_F_NAMED       (1u << 1)  /* advertised a (complete/short) name */
+#define HC_BLE_F_APPLE       (1u << 2)  /* Apple mfg data (FindMy/AirTag heuristic) */
+#define HC_BLE_F_RANDOM      (1u << 3)  /* random address type */
+
+/* One BLE advertiser sighting, sent with HC_EV_BLE_DEV. */
+typedef struct __attribute__((packed)) {
+    uint8_t  addr[6];        /* advertiser address (little-endian as reported) */
+    uint8_t  addr_type;      /* NimBLE BLE_ADDR_* */
+    int8_t   rssi;           /* dBm */
+    uint8_t  flags;          /* HC_BLE_F_* */
+    uint8_t  name_len;       /* 0..29 */
+    char     name[29];       /* not NUL-terminated; use name_len */
+} hc_ble_dev_evt_t;
 
 #ifdef __cplusplus
 }

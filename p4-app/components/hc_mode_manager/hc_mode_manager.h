@@ -42,6 +42,11 @@ esp_err_t hc_mode_manager_wifi_scan_start(const hc_wscan_cfg_t *cfg);
 esp_err_t hc_mode_manager_wifi_scan_stop(void);
 esp_err_t hc_mode_manager_wifi_set_channel(uint8_t channel);
 
+/* BLE recon control (valid only in HC_MODE_BLE_SCANNER). Device sightings arrive
+ * as HC_EV_BLE_DEV and are folded into hc_ble_recon. */
+esp_err_t hc_mode_manager_ble_scan_start(const hc_blescan_cfg_t *cfg);
+esp_err_t hc_mode_manager_ble_scan_stop(void);
+
 /* Pulse the C6 reset line (recovery / forced role reboot). */
 void hc_mode_manager_reset_c6(void);
 

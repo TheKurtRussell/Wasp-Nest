@@ -55,7 +55,7 @@ Built on Honeycomb's scaffold (clean interfaces, on-hardware bring-up TODOs).
 | P4 mode manager wiring | **In** — scan controls + `HC_EV_WIFI_AP` logging |
 | Channel hopping (C6) | **In** — esp_timer rotates `hop[]` every `hop_dwell_ms` |
 | P4 `hc_wifi_recon` dedupe + Wi-Fi UI tab | **In** — live AP table (SSID/BSSID/ch/RSSI) on the "wifi" tile |
-| BLE recon | **Next** — same shape, swap the C6 radio |
+| BLE recon | **In** — NimBLE observer (C6) + live device table on the "ble" tile |
 | C5 foragers (5 GHz over ESP-NOW) | **Next** — reuse these wire structs |
 | Active modules (authorized only) | **Later** |
 

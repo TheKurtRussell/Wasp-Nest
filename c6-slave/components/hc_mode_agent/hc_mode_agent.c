@@ -6,6 +6,7 @@
 #include "hc_radio_sniffer.h"
 #include "hc_radio_wifi.h"
 #include "hc_radio_wifi_sniffer.h"
+#include "hc_radio_ble_scanner.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -60,6 +61,16 @@ static const hc_wifi_sniffer_callbacks_t k_wifi_cb = {
     .on_ap = on_wifi_ap, .on_frame = NULL, .ctx = NULL,
 };
 
+/* BLE recon: forward each advertiser sighting to the P4. */
+static void on_ble_dev(const hc_ble_dev_evt_t *dev, void *ctx)
+{
+    hc_link_slave_send(HC_EV_BLE_DEV, dev, sizeof(*dev));
+}
+
+static const hc_ble_scanner_callbacks_t k_ble_cb = {
+    .on_dev = on_ble_dev, .ctx = NULL,
+};
+
 /* ---- mode transitions ---------------------------------------------------- */
 static void report_mode(uint8_t ok, uint8_t reason)
 {
@@ -83,6 +94,14 @@ static esp_err_t enter_wifi_sniffer(void)
     return ESP_OK;
 }
 
+static esp_err_t enter_ble_scanner(void)
+{
+    esp_err_t e = hc_ble_scanner_init(&k_ble_cb);
+    if (e != ESP_OK) return e;
+    s_mode = HC_MODE_BLE_SCANNER;
+    return ESP_OK;
+}
+
 static void enter_wifi_via_reboot(void)
 {
     /* Persist intent and restart into the esp_hosted slave role. */
@@ -100,6 +119,7 @@ static void apply_mode(hc_radio_mode_t target)
     /* leave current */
     if (s_mode == HC_MODE_SNIFFER)      hc_sniffer_deinit();
     if (s_mode == HC_MODE_WIFI_SNIFFER) hc_wifi_sniffer_deinit();
+    if (s_mode == HC_MODE_BLE_SCANNER)  hc_ble_scanner_deinit();
 
     switch (target) {
     case HC_MODE_IDLE:
@@ -113,6 +133,10 @@ static void apply_mode(hc_radio_mode_t target)
     case HC_MODE_WIFI_SNIFFER:
         if (enter_wifi_sniffer() == ESP_OK) report_mode(1, HC_MODEFAIL_NONE);
         else                                report_mode(0, HC_MODEFAIL_RADIO_ERR);
+        break;
+    case HC_MODE_BLE_SCANNER:
+        if (enter_ble_scanner() == ESP_OK) report_mode(1, HC_MODEFAIL_NONE);
+        else                               report_mode(0, HC_MODEFAIL_RADIO_ERR);
         break;
     case HC_MODE_WIFI:
         report_mode(1, HC_MODEFAIL_NONE); /* ack before we reboot */
@@ -178,6 +202,13 @@ static void on_link_rx(hc_opcode_t op, const uint8_t *p, uint16_t len, void *ctx
     case HC_OP_WSCAN_SET_CHAN:
         if (len >= sizeof(hc_set_chan_t))
             hc_wifi_sniffer_set_channel(((const hc_set_chan_t *)p)->channel);
+        break;
+    case HC_OP_BLESCAN_START:
+        if (s_mode == HC_MODE_BLE_SCANNER && len >= sizeof(hc_blescan_cfg_t))
+            hc_ble_scanner_start((const hc_blescan_cfg_t *)p);
+        break;
+    case HC_OP_BLESCAN_STOP:
+        hc_ble_scanner_stop();
         break;
     default:
         hc_link_slave_logf(1, "unknown op 0x%02x", op);

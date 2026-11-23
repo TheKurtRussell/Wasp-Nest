@@ -1,0 +1,6 @@
+# Wasp Nest C6 — 2 MB factory app (room for NimBLE + Wi-Fi + 802.15.4).
+# App stays at 0x10000 so the SD-based C6 updater (writes app only) is unchanged.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x200000,

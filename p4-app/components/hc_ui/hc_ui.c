@@ -11,6 +11,7 @@
 #include "hc_ui.h"
 #include "hc_mode_manager.h"
 #include "hc_wifi_recon.h"
+#include "hc_ble_recon.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -167,14 +168,31 @@ static lv_obj_t  *s_dash_psram;
 static lv_obj_t  *s_dash_heap;
 static lv_obj_t  *s_dash_uptime;
 static lv_obj_t  *s_wifi_tbl;
+static lv_obj_t  *s_ble_tbl;
+static int        s_open_tool = -1;
+
+/* Default scan configs used when a recon tab is opened. */
+static const hc_wscan_cfg_t   k_wifi_cfg = {
+    .band_mask = HC_WBAND_2G4, .hop_count = 3, .hop_dwell_ms = 250,
+    .promiscuous = 1, .want_raw = 0, .hop = {1, 6, 11},
+};
+static const hc_blescan_cfg_t k_ble_cfg = { .active = 0, .itvl = 0, .window = 0 };
 
 static void close_tool(lv_event_t *e)
 {
     (void)e;
+    /* Stop whatever radio work this tab started, and park the C6. */
+    if (s_open_tool == TOOL_WIFI)      hc_mode_manager_wifi_scan_stop();
+    else if (s_open_tool == TOOL_BLE)  hc_mode_manager_ble_scan_stop();
+    if (s_open_tool == TOOL_WIFI || s_open_tool == TOOL_BLE)
+        hc_mode_manager_set_mode(HC_MODE_IDLE);
+    s_open_tool = -1;
+
     if (s_tool_timer) { lv_timer_delete(s_tool_timer); s_tool_timer = NULL; }
     if (s_overlay)    { lv_obj_delete_async(s_overlay); s_overlay = NULL; }
     s_dash_psram = s_dash_heap = s_dash_uptime = NULL;
     s_wifi_tbl = NULL;
+    s_ble_tbl = NULL;
     s_tool_pending = false;
 }
 
@@ -302,6 +320,10 @@ static void wifi_refresh_cb(lv_timer_t *t)
 
 static void open_wifi(void)
 {
+    /* drive the C6 into Wi-Fi recon and start a 3-channel sweep */
+    hc_mode_manager_set_mode(HC_MODE_WIFI_SNIFFER);
+    hc_mode_manager_wifi_scan_start(&k_wifi_cfg);
+
     lv_obj_t *ov = tool_shell("wi-fi recon");
 
     lv_obj_t *hint = lv_label_create(ov);
@@ -334,6 +356,72 @@ static void open_wifi(void)
     s_tool_timer = lv_timer_create(wifi_refresh_cb, 1000, NULL);
 }
 
+/* ---- ble recon: live device table, pulled from hc_ble_recon once a second --- */
+static void ble_refresh_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_ble_tbl) return;
+    static hc_ble_dev_t devs[64];
+    size_t n = hc_ble_recon_snapshot(devs, sizeof(devs) / sizeof(devs[0]));
+    lv_table_set_row_count(s_ble_tbl, (uint32_t)n + 1);
+    char b[28];
+    for (size_t i = 0; i < n; i++) {
+        uint32_t row = (uint32_t)i + 1;
+        lv_table_set_cell_value(s_ble_tbl, row, 0,
+                                devs[i].name_len ? devs[i].name : "(no name)");
+        snprintf(b, sizeof(b), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 devs[i].addr[5], devs[i].addr[4], devs[i].addr[3],
+                 devs[i].addr[2], devs[i].addr[1], devs[i].addr[0]);
+        lv_table_set_cell_value(s_ble_tbl, row, 1, b);
+        snprintf(b, sizeof(b), "%d", devs[i].rssi);
+        lv_table_set_cell_value(s_ble_tbl, row, 2, b);
+        /* compact tag column: A=Apple/FindMy, C=connectable, R=random addr */
+        char tags[4]; int ti = 0;
+        if (devs[i].flags & HC_BLE_F_APPLE)       tags[ti++] = 'A';
+        if (devs[i].flags & HC_BLE_F_CONNECTABLE) tags[ti++] = 'C';
+        if (devs[i].flags & HC_BLE_F_RANDOM)      tags[ti++] = 'R';
+        tags[ti] = '\0';
+        lv_table_set_cell_value(s_ble_tbl, row, 3, tags);
+    }
+}
+
+static void open_ble(void)
+{
+    hc_mode_manager_set_mode(HC_MODE_BLE_SCANNER);
+    hc_mode_manager_ble_scan_start(&k_ble_cfg);
+
+    lv_obj_t *ov = tool_shell("ble recon");
+
+    lv_obj_t *hint = lv_label_create(ov);
+    lv_label_set_text(hint, "advertisers (strongest first) \xC2\xB7 A=findmy C=conn R=random");
+    lv_obj_set_style_text_color(hint, lv_color_hex(HC_DIMTXT), 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, 160, 56);
+
+    s_ble_tbl = lv_table_create(ov);
+    lv_obj_set_size(s_ble_tbl, LV_PCT(94), LV_PCT(72));
+    lv_obj_align(s_ble_tbl, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_style_bg_color(s_ble_tbl, lv_color_hex(HC_BG), 0);
+    lv_obj_set_style_bg_opa(s_ble_tbl, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_ble_tbl, 0, 0);
+    lv_obj_set_style_bg_color(s_ble_tbl, lv_color_hex(HC_PANEL), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(s_ble_tbl, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(s_ble_tbl, lv_color_hex(HC_LCYAN), LV_PART_ITEMS);
+    lv_obj_set_style_border_color(s_ble_tbl, lv_color_hex(0x2E2452), LV_PART_ITEMS);
+
+    lv_table_set_column_count(s_ble_tbl, 4);
+    lv_table_set_column_width(s_ble_tbl, 0, 330);
+    lv_table_set_column_width(s_ble_tbl, 1, 240);
+    lv_table_set_column_width(s_ble_tbl, 2, 80);
+    lv_table_set_column_width(s_ble_tbl, 3, 90);
+    lv_table_set_cell_value(s_ble_tbl, 0, 0, "NAME");
+    lv_table_set_cell_value(s_ble_tbl, 0, 1, "ADDRESS");
+    lv_table_set_cell_value(s_ble_tbl, 0, 2, "RSSI");
+    lv_table_set_cell_value(s_ble_tbl, 0, 3, "TAGS");
+
+    ble_refresh_cb(NULL);
+    s_tool_timer = lv_timer_create(ble_refresh_cb, 1000, NULL);
+}
+
 static void open_msg(const char *title, const char *msg, uint32_t color)
 {
     lv_obj_t *ov = tool_shell(title);
@@ -349,10 +437,11 @@ static void async_open_tool(void *p)
     s_tool_pending = false;
     if (s_overlay) return;
     int id = (int)(intptr_t)p;
+    s_open_tool = id;
     switch (id) {
         case TOOL_WIFI:     open_wifi(); break;
+        case TOOL_BLE:      open_ble(); break;
         case TOOL_CONFIG:   open_config(); break;
-        case TOOL_BLE:      open_msg("ble recon", "coming soon", HC_LCYAN); break;
         case TOOL_CAPTURE:  open_msg("capture", "pcap to SD\ncoming soon", HC_LHONEY); break;
         case TOOL_BENCH:    open_msg("usb bench", "coming soon", HC_LHONEY); break;
         default:            open_msg("802.15.4", "waiting on the C6 radio", HC_DIMTXT); break;

@@ -5,6 +5,7 @@
 #include "hc_link_host.h"
 #include "hc_explorer.h"
 #include "hc_wifi_recon.h"
+#include "hc_ble_recon.h"
 #include "hc_board.h"
 
 #include <string.h>
@@ -47,6 +48,10 @@ static void on_link_rx(hc_opcode_t op, const uint8_t *p, uint16_t len, void *ctx
     case HC_EV_WIFI_AP:
         if (len >= sizeof(hc_wifi_ap_evt_t))
             hc_wifi_recon_on_ap((const hc_wifi_ap_evt_t *)p);
+        break;
+    case HC_EV_BLE_DEV:
+        if (len >= sizeof(hc_ble_dev_evt_t))
+            hc_ble_recon_on_dev((const hc_ble_dev_evt_t *)p);
         break;
     case HC_EV_LOG:
         if (len >= 1) ESP_LOGI("c6", "%s", ((const hc_log_t *)p)->msg);
@@ -118,3 +123,10 @@ esp_err_t hc_mode_manager_wifi_scan_stop(void)
 esp_err_t hc_mode_manager_wifi_set_channel(uint8_t channel)
 { hc_set_chan_t c = { .channel = channel };
   return hc_link_host_send(HC_OP_WSCAN_SET_CHAN, &c, sizeof(c)); }
+
+/* ---- BLE recon control (valid only in HC_MODE_BLE_SCANNER) ---------------- */
+esp_err_t hc_mode_manager_ble_scan_start(const hc_blescan_cfg_t *cfg)
+{ return hc_link_host_send(HC_OP_BLESCAN_START, cfg, sizeof(*cfg)); }
+
+esp_err_t hc_mode_manager_ble_scan_stop(void)
+{ return hc_link_host_send(HC_OP_BLESCAN_STOP, NULL, 0); }
